@@ -121,11 +121,13 @@ def build_pdf_bytes_for_name(name, stanzas):
         raise ValueError(f"No valid Hebrew letters found in name '{name}'.")
 
     pdf = FPDF()
-    # Enable text shaping for RTL languages (requires fpdf2 >= 2.7)
+
+
+    # Try to enable text shaping; if uharfbuzz or support is missing, just skip it.
     try:
         pdf.set_text_shaping(True)
-    except AttributeError:
-        # Older versions may not have set_text_shaping; PDF will still render, just less perfect shaping
+    except Exception:
+        # It's okay if text shaping is unavailable; basic RTL rendering will still work.
         pass
 
     pdf.add_page()
