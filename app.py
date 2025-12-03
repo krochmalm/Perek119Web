@@ -1,5 +1,4 @@
 import io
-import json
 import re
 import html
 import zipfile
@@ -10,6 +9,7 @@ import streamlit as st
 
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
+from fpdf import FPDF  # NEW: for PDF support
 
 
 # ================== Core Logic (Shared) ================== #
@@ -54,7 +54,7 @@ def load_tehillim_119():
 
 def build_stanzas(verses_119):
     """Split 176 verses into 22 stanzas of 8 pesukim."""
-    return [verses_119[i:i+8] for i in range(0, 176, 8)]
+    return [verses_119[i:i + 8] for i in range(0, 176, 8)]
 
 
 def get_stanzas_for_name(name, stanzas):
@@ -110,6 +110,51 @@ def build_docx_bytes_for_name(name, stanzas):
     return bio.getvalue()
 
 
+def build_pdf_bytes_for_name(name, stanzas):
+    """
+    Build a PDF in memory for a given name and return raw bytes.
+    Uses fpdf2 with a Unicode font that supports Hebrew.
+    Assumes font/DejaVuSansCondensed.ttf is present.
+    """
+    sections = get_stanzas_for_name(name, stanzas)
+    if not sections:
+        raise ValueError(f"No valid Hebrew letters found in name '{name}'.")
+
+    pdf = FPDF()
+    # Enable text shaping for RTL languages (requires fpdf2 >= 2.7)
+    try:
+        pdf.set_text_shaping(True)
+    except AttributeError:
+        # Older versions may not have set_text_shaping; PDF will still render, just less perfect shaping
+        pass
+
+    pdf.add_page()
+
+    # Load Unicode font that supports Hebrew
+    # Make sure font/DejaVuSansCondensed.ttf exists in the repo
+    pdf.add_font("DejaVu", "", "font/DejaVuSansCondensed.ttf", uni=True)
+    pdf.set_font("DejaVu", size=14)
+    pdf.set_auto_page_break(auto=True, margin=15)
+
+    # Title
+    title = f"תהילים פרק קיט עבור השם: {name}"
+    pdf.multi_cell(0, 8, txt=title, align="R")
+    pdf.ln(4)
+
+    for letter, stanza in sections:
+        # Letter heading
+        pdf.multi_cell(0, 8, txt=letter, align="R")
+        pdf.ln(1)
+
+        for pasuk in stanza:
+            pdf.multi_cell(0, 8, txt=pasuk, align="R")
+        pdf.ln(3)
+
+    # Return raw bytes
+    pdf_bytes = pdf.output(dest="S").encode("latin1")
+    return pdf_bytes
+
+
 # ================== Streamlit UI ================== #
 
 st.set_page_config(page_title="Perek 119 Builder", page_icon="📖", layout="centered")
@@ -136,22 +181,40 @@ with tab_single:
 
     single_name = st.text_input("Enter a Hebrew name (e.g., יצחק בן אברהם):", value="")
 
-    if st.button("Generate DOCX for This Name"):
+    format_choice_single = st.radio(
+        "Choose output format:",
+        ["DOCX", "PDF"],
+        horizontal=True,
+    )
+
+    if st.button("Generate for This Name"):
         if not single_name.strip():
             st.error("Please enter a Hebrew name.")
         else:
             try:
-                docx_bytes = build_docx_bytes_for_name(single_name, stanzas_119)
                 safe_name = single_name.strip().replace(" ", "_") or "name"
-                filename = f"{safe_name}_Tehillim119.docx"
 
-                st.success("Document generated successfully. Click below to download.")
-                st.download_button(
-                    label="⬇ Download DOCX",
-                    data=docx_bytes,
-                    file_name=filename,
-                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                )
+                if format_choice_single == "DOCX":
+                    docx_bytes = build_docx_bytes_for_name(single_name, stanzas_119)
+                    filename = f"{safe_name}_Tehillim119.docx"
+                    st.success("DOCX document generated successfully. Click below to download.")
+                    st.download_button(
+                        label="⬇ Download DOCX",
+                        data=docx_bytes,
+                        file_name=filename,
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    )
+                else:
+                    pdf_bytes = build_pdf_bytes_for_name(single_name, stanzas_119)
+                    filename = f"{safe_name}_Tehillim119.pdf"
+                    st.success("PDF document generated successfully. Click below to download.")
+                    st.download_button(
+                        label="⬇ Download PDF",
+                        data=pdf_bytes,
+                        file_name=filename,
+                        mime="application/pdf",
+                    )
+
             except Exception as e:
                 st.error(f"Error: {e}")
 
@@ -170,6 +233,13 @@ with tab_excel:
         type=["xlsx", "xls"],
     )
 
+    batch_format = st.radio(
+        "Output format for each name:",
+        ["DOCX", "PDF"],
+        horizontal=True,
+        key="batch_format_radio",
+    )
+
     if uploaded_file is not None:
         try:
             df = pd.read_excel(uploaded_file)
@@ -184,7 +254,7 @@ with tab_excel:
                 st.write("Preview of names:")
                 st.dataframe(df[["Name"]].head())
 
-                if st.button("Generate DOCX Files for All Names"):
+                if st.button("Generate Files for All Names"):
                     names = [str(n).strip() for n in df["Name"].dropna()]
                     names = [n for n in names if n]
 
@@ -195,23 +265,28 @@ with tab_excel:
                         with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
                             for name in names:
                                 try:
-                                    docx_bytes = build_docx_bytes_for_name(name, stanzas_119)
                                     safe_name = name.replace(" ", "_") or "name"
-                                    file_name = f"{safe_name}_Tehillim119.docx"
-                                    zf.writestr(file_name, docx_bytes)
-                                except Exception as e:
-                                    # You could also log errors per-name here
+                                    if batch_format == "DOCX":
+                                        docx_bytes = build_docx_bytes_for_name(name, stanzas_119)
+                                        file_name = f"{safe_name}_Tehillim119.docx"
+                                        zf.writestr(file_name, docx_bytes)
+                                    else:
+                                        pdf_bytes = build_pdf_bytes_for_name(name, stanzas_119)
+                                        file_name = f"{safe_name}_Tehillim119.pdf"
+                                        zf.writestr(file_name, pdf_bytes)
+                                except Exception:
+                                    # Optionally log per-name errors here
                                     continue
                         zip_buffer.seek(0)
 
                         st.success(
-                            f"Generated documents for {len(names)} name(s). "
+                            f"Generated {batch_format} files for {len(names)} name(s). "
                             "Download them as a ZIP file below."
                         )
                         st.download_button(
-                            label="⬇ Download ZIP of DOCX files",
+                            label="⬇ Download ZIP of files",
                             data=zip_buffer.getvalue(),
-                            file_name="Tehillim119_Names.zip",
+                            file_name=f"Tehillim119_Names_{batch_format}.zip",
                             mime="application/zip",
                         )
     else:
